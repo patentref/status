@@ -1,0 +1,109 @@
+name: uptime
+
+# External uptime probe for https://patentref.io (PatentRef checklist 5.4; the 5.8 uptime clock).
+# Lives in the PUBLIC repository patentref/status (unlimited Actions minutes; the private patentref repo's
+# free 2,000 minutes a month would run out in a week at this cadence, since every job bills a whole minute).
+# Source of truth for this file and probe.py: ops/uptime/ in patentref/patentref; copy both here on change.
+#
+# Every 5 minutes (the shortest schedule GitHub allows). GitHub's scheduler is best effort: a run can start
+# several minutes late and runs are dropped under load, so the history records when each probe actually ran
+# and the uptime rule (ops/monitoring.md) treats a gap as missing runs, not as an outage.
+#
+# Secrets (set by the operator, never printed): PROBE_KEY (an API key without an account, for the keyed
+# query; without it only the health route is probed), ANITW_DESK_SECRET (files a desk item on failure).
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: uptime
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe
+        id: probe
+        continue-on-error: true
+        env:
+          TARGET: https://patentref.io
+          PROBE_KEY: ${{ secrets.PROBE_KEY }}
+          RUNNER_LABEL: github-actions-${{ runner.os }}
+        run: python3 probe.py
+
+      - name: Commit the history
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "patentref-uptime"
+          git config user.email "uptime@patentref.io"
+          git add uptime/history.json uptime/latest.json
+          if git diff --cached --quiet; then echo "nothing to commit"; exit 0; fi
+          git commit -q -m "probe ${{ steps.probe.outputs.ok == 'true' && 'pass' || 'FAIL' }}: ${{ steps.probe.outputs.line }} [skip ci]"
+          for i in 1 2 3 4 5; do
+            if git push -q origin HEAD:main; then exit 0; fi
+            git pull -q --rebase origin main || true
+            sleep $((i * 3))
+          done
+          echo "::error::could not push the history after 5 tries"; exit 1
+
+      - name: Open or update the outage issue and file a desk item
+        if: steps.probe.outputs.ok != 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANITW_DESK_SECRET: ${{ secrets.ANITW_DESK_SECRET }}
+          ANITW_DESK_URL: ${{ vars.ANITW_DESK_URL || 'https://anitw.patentref.io' }}
+          LINE: ${{ steps.probe.outputs.line }}
+        run: |
+          set -euo pipefail
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          EXISTING=$(gh issue list -R "${{ github.repository }}" --label outage --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" -R "${{ github.repository }}" --body "Still failing: $LINE ($RUN_URL)"
+            echo "issue #$EXISTING updated; desk item not repeated while the issue is open"
+            exit 0
+          fi
+          gh label create outage -R "${{ github.repository }}" --color d73a4a --description "patentref.io probe failure" 2>/dev/null || true
+          NUM=$(gh issue create -R "${{ github.repository }}" --title "patentref.io probe failed: $LINE" --label outage \
+                --body "The external probe failed. $LINE. Run: $RUN_URL. One failed probe between two passes counts as nothing for the uptime figure; a second consecutive failure starts an outage (ops/monitoring.md in patentref/patentref). This issue closes itself on the next passing probe." \
+                | grep -o '[0-9]*$')
+          echo "opened issue #$NUM"
+          if [ -n "${ANITW_DESK_SECRET:-}" ]; then
+            BODY=$(python3 - "$LINE" "$RUN_URL" "$NUM" <<'PY'
+          import json, sys
+          line, run, num = sys.argv[1:4]
+          print(json.dumps({"project": "patentref", "agent": "uptime probe (GitHub Actions)", "machine": "github-actions",
+                            "kind": "other", "title": "ALERT patentref.io: external probe failed", "detail": line + ". Run: " + run,
+                            "url": "https://patentref.io/api/v1/meta/status/", "how_to_resume": "Check https://patentref.io/api/v1/meta/status/ and the box (systemctl status patentref-api, docker ps in /srv/anitw). The issue in patentref/status closes itself when the probe passes.",
+                            "batch_id": "alerts"}))
+          PY
+          )
+            CODE=$(curl -s -o /tmp/desk.json -w '%{http_code}' -X POST "$ANITW_DESK_URL/requests" -H "X-ANITW-Secret: $ANITW_DESK_SECRET" -H "Content-Type: application/json" -d "$BODY" || true)
+            echo "desk item: HTTP $CODE $(python3 -c 'import json;print(json.load(open("/tmp/desk.json")).get("id",""))' 2>/dev/null || true)"
+          else
+            echo "no desk secret: desk item not filed"
+          fi
+
+      - name: Close the outage issue on recovery
+        if: steps.probe.outputs.ok == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LINE: ${{ steps.probe.outputs.line }}
+        run: |
+          set -euo pipefail
+          for NUM in $(gh issue list -R "${{ github.repository }}" --label outage --state open --json number --jq '.[].number'); do
+            gh issue close "$NUM" -R "${{ github.repository }}" --comment "Recovered: $LINE"
+            echo "closed issue #$NUM"
+          done
