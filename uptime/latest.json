@@ -1,14 +1,14 @@
 {
- "t": "2026-10-07T07:19:46Z",
+ "t": "2026-10-07T17:22:50Z",
  "ok": true,
  "status": 200,
- "ms": 545.2,
+ "ms": 499.6,
  "attempts": 1,
  "keyed": {
   "status": 200,
-  "ms": 548.7
+  "ms": 546.9
  },
- "data_version": "20260929.1",
+ "data_version": "20261006.2",
  "code_version": "6091fc7",
  "runner": "github-actions-Linux"
 }
