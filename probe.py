@@ -33,6 +33,7 @@ TIMEOUT = float(os.environ.get("PROBE_TIMEOUT", "10"))
 RETRY_SECONDS = float(os.environ.get("RETRY_SECONDS", "15"))
 KEEP_DAYS = int(os.environ.get("KEEP_DAYS", "45"))
 RUNNER = os.environ.get("RUNNER_LABEL", "github-actions")
+TEST_RUN = os.environ.get("TEST_RUN", "") == "1"  # a dispatch against another target or without recording: marked in the line, never in the history
 UA = "patentref-uptime-probe/1 (+https://github.com/patentref/status)"
 
 
@@ -98,6 +99,18 @@ def main():
         if result.get("first_error"):
             probe["first_error"] = result["first_error"]
 
+    line = (f"{t} {'PASS' if probe['ok'] else 'FAIL'} health {probe['status']} in {probe['ms']} ms"
+            f" (attempts {attempts})" + (f", keyed {keyed['status']} in {keyed['ms']} ms" if keyed else ", no key")
+            + (f", data {probe['data_version']}" if probe["data_version"] else "") + (f", error {probe['error']}" if probe.get("error") else ""))
+    if TEST_RUN:
+        line = f"TEST RUN against {TARGET} (not recorded): " + line
+        print(line)
+        out = os.environ.get("GITHUB_OUTPUT")
+        if out:
+            with open(out, "a", encoding="utf-8") as f:
+                f.write(f"ok={'true' if probe['ok'] else 'false'}\nstatus={probe['status']}\nms={probe['ms']}\nline={line}\n")
+        return 0 if probe["ok"] else 1
+
     hist = {"probes": []}
     if HISTORY.exists():
         try:
@@ -118,9 +131,6 @@ def main():
     HISTORY.write_text(json.dumps(hist, separators=(",", ":")) + "\n", encoding="utf-8")
     LATEST.write_text(json.dumps(probe, indent=1) + "\n", encoding="utf-8")
 
-    line = (f"{t} {'PASS' if probe['ok'] else 'FAIL'} health {probe['status']} in {probe['ms']} ms"
-            f" (attempts {attempts})" + (f", keyed {keyed['status']} in {keyed['ms']} ms" if keyed else ", no key")
-            + (f", data {probe['data_version']}" if probe["data_version"] else "") + (f", error {probe['error']}" if probe.get("error") else ""))
     print(line)
     out = os.environ.get("GITHUB_OUTPUT")
     if out:

@@ -16,6 +16,13 @@ on:
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
+    inputs:
+      target:
+        description: "Base URL to probe (a dead host tests the alert path)"
+        default: "https://patentref.io"
+      record:
+        description: "Commit the result to the history (false for a test run)"
+        default: "true"
 
 permissions:
   contents: write
@@ -36,12 +43,14 @@ jobs:
         id: probe
         continue-on-error: true
         env:
-          TARGET: https://patentref.io
+          TARGET: ${{ inputs.target || 'https://patentref.io' }}
           PROBE_KEY: ${{ secrets.PROBE_KEY }}
           RUNNER_LABEL: github-actions-${{ runner.os }}
+          TEST_RUN: ${{ (inputs.record == 'false' || (inputs.target != '' && inputs.target != 'https://patentref.io')) && '1' || '' }}
         run: python3 probe.py
 
       - name: Commit the history
+        if: inputs.record != 'false'
         shell: bash
         run: |
           set -euo pipefail
