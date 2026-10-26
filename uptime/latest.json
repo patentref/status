@@ -1,12 +1,12 @@
 {
- "t": "2026-10-26T10:26:56Z",
+ "t": "2026-10-26T16:54:22Z",
  "ok": true,
  "status": 200,
- "ms": 388.8,
+ "ms": 500.6,
  "attempts": 1,
  "keyed": {
   "status": 200,
-  "ms": 377.2
+  "ms": 497.6
  },
  "data_version": "20261020.2",
  "code_version": "3508fbf",
